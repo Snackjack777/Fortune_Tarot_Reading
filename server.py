@@ -1,151 +1,101 @@
-# server.py
-"""
-UDP Server สำหรับให้บริการข้อมูลไพ่ทาโรต์
-รับคำขอจาก client และส่งข้อมูลไพ่กลับไป
-"""
-
 import socket
 import json
-import threading
-from cards import get_all_cards, get_card_prediction, get_cards_by_category
+import firebase_admin
+from firebase_admin import credentials, db
+import sys
 
-# การตั้งค่าเซิร์ฟเวอร์
-UDP_IP = "127.0.0.1"  # localhost
-UDP_PORT = 5005
-BUFFER_SIZE = 65536  # เพิ่ม buffer size สำหรับข้อมูลขนาดใหญ่
+# บังคับ stdout ให้เป็น UTF-8 เพื่อดู Log ภาษาไทยได้
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
-# สร้าง UDP socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((UDP_IP, UDP_PORT))
-sock.settimeout(1.0)  # timeout 1 วินาที เพื่อให้สามารถตรวจสอบการปิดโปรแกรมได้
+# --- 1. การตั้งค่า Firebase Admin SDK ---
+cred = credentials.Certificate(r"D:\python69\FT2\FTR.json")
+firebase_admin.initialize_app(cred, {
+    "databaseURL": "https://fortunetarot888-default-rtdb.asia-southeast1.firebasedatabase.app/"
+})
 
-print(f"✨ Tarot Card Server กำลังทำงานที่ {UDP_IP}:{UDP_PORT}")
-print("รอรับคำขอจาก client...")
-
-running = True
-
-def handle_request(data, addr):
-    """จัดการคำขอจาก client"""
+def get_prediction(card_name, category):
     try:
-        # แปลงข้อมูล JSON ที่ได้รับ
-        request = json.loads(data.decode('utf-8'))
-        command = request.get('command', '')
+        # แก้ไข: ตรวจสอบโครงสร้างข้อมูลใน Firebase ก่อน
+        ref = db.reference("tarot")
+        all_data = ref.get()
         
-        print(f"📨 ได้รับคำขอ: {command} จาก {addr}")
+        if not all_data:
+            return "ไม่พบข้อมูลในฐานข้อมูล"
         
-        response = {"status": "error", "message": "ไม่พบคำสั่งที่ระบุ"}
+        print(f"Data structure: {type(all_data)}")  # debug
         
-        if command == 'get_all_cards':
-            # ส่งรายชื่อไพ่ทั้งหมด
-            cards = get_all_cards()
-            response = {
-                "status": "success",
-                "command": command,
-                "data": cards,
-                "count": len(cards)
-            }
-            
-        elif command == 'get_card_prediction':
-            # ส่งคำทำนายของไพ่เฉพาะ
-            card_name = request.get('card_name', '')
-            category = request.get('category', 'daily')
-            
-            if card_name:
-                prediction = get_card_prediction(card_name, category)
-                response = {
-                    "status": "success",
-                    "command": command,
-                    "card_name": card_name,
-                    "category": category,
-                    "prediction": prediction
-                }
-            else:
-                response = {"status": "error", "message": "ไม่พบชื่อไพ่"}
-                
-        elif command == 'get_cards_by_category':
-            # ส่งรายชื่อไพ่ที่มีคำทำนายสำหรับหมวดหมู่ที่กำหนด
-            category = request.get('category', 'daily')
-            cards = get_cards_by_category(category)
-            response = {
-                "status": "success",
-                "command": command,
-                "category": category,
-                "data": cards,
-                "count": len(cards)
-            }
-            
-        elif command == 'shuffle_deck':
-            # สับไพ่ (server-side shuffling)
-            category = request.get('category', None)
-            if category:
-                cards = get_cards_by_category(category)
-            else:
-                cards = get_all_cards()
-                
-            # สับไพ่ (server-side)
-            import random
-            shuffled = cards.copy()
-            random.shuffle(shuffled)
-            
-            response = {
-                "status": "success",
-                "command": command,
-                "category": category,
-                "data": shuffled,
-                "count": len(shuffled)
-            }
-            
-        elif command == 'ping':
-            # ทดสอบการเชื่อมต่อ
-            response = {
-                "status": "success",
-                "command": command,
-                "message": "pong"
-            }
-            
-        elif command == 'shutdown':
-            # ปิดเซิร์ฟเวอร์
-            global running
-            running = False
-            response = {
-                "status": "success",
-                "command": command,
-                "message": "เซิร์ฟเวอร์กำลังจะปิดตัวลง"
-            }
-            
-        # ส่ง response กลับไปยัง client
-        sock.sendto(json.dumps(response, ensure_ascii=False).encode('utf-8'), addr)
-        print(f"📤 ส่งข้อมูลกลับไปยัง {addr} เรียบร้อย")
+        # กรณีที่ 1: โครงสร้างเป็น /tarot/{card_name}/{category}
+        if isinstance(all_data, dict) and card_name in all_data:
+            card_data = all_data[card_name]
+            if isinstance(card_data, dict) and category in card_data:
+                return card_data[category]
         
-    except json.JSONDecodeError:
-        error_msg = {"status": "error", "message": "ข้อมูล JSON ไม่ถูกต้อง"}
-        sock.sendto(json.dumps(error_msg).encode('utf-8'), addr)
-        print(f"⚠️ ข้อผิดพลาด: JSON ไม่ถูกต้องจาก {addr}")
+        # กรณีที่ 2: โครงสร้างเป็น /tarot/{category}/{card_name}
+        if isinstance(all_data, dict) and category in all_data:
+            category_data = all_data[category]
+            if isinstance(category_data, dict) and card_name in category_data:
+                return category_data[card_name]
+        
+        # กรณีที่ 3: โครงสร้างเป็น list ของไพ่
+        if isinstance(all_data, list):
+            for card in all_data:
+                if isinstance(card, dict):
+                    if card.get('name') == card_name:
+                        return card.get(category, "ไม่พบคำทำนาย")
+        
+        # กรณีที่ 4: ลองค้นหาแบบ case-insensitive
+        card_name_lower = card_name.lower()
+        for key in all_data.keys():
+            if key.lower() == card_name_lower:
+                card_data = all_data[key]
+                if isinstance(card_data, dict) and category in card_data:
+                    return card_data[category]
+        
+        return f"ไม่พบคำทำนายสำหรับไพ่ '{card_name}' ในหมวดหมู่ '{category}'"
         
     except Exception as e:
-        error_msg = {"status": "error", "message": f"เกิดข้อผิดพลาด: {str(e)}"}
-        sock.sendto(json.dumps(error_msg).encode('utf-8'), addr)
-        print(f"❌ ข้อผิดพลาด: {str(e)}")
+        return f"เกิดข้อผิดพลาดในการดึงข้อมูล: {str(e)}"
 
-# รันเซิร์ฟเวอร์
-try:
-    while running:
+# --- 2. การตั้งค่า UDP Server ---
+HOST = "0.0.0.0"
+PORT = 5000
+
+server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server.bind((HOST, PORT))
+
+print(f"Tarot UDP Server Started on {HOST}:{PORT}")
+print("Waiting for clients...")
+
+while True:
+    try:
+        # รับข้อมูลจาก Client
+        data, addr = server.recvfrom(4096)
+        message = data.decode('utf-8')
+        
+        print(f"Received from {addr}: {message}")
+        
+        if "," in message:
+            card, category = message.split(",", 1)  # split only first comma
+            card = card.strip()
+            category = category.strip()
+            
+            print(f"Processing: Card='{card}', Category='{category}'")
+            
+            # ดึงคำทำนายจาก Firebase
+            prediction_result = get_prediction(card, category)
+            
+            # ส่งข้อมูลกลับ (แปลงเป็น JSON string เพื่อรองรับภาษาไทย)
+            response = json.dumps(prediction_result, ensure_ascii=False)
+            server.sendto(response.encode('utf-8'), addr)
+            print(f"Sent response to {addr}")
+        else:
+            error_msg = "รูปแบบข้อมูลไม่ถูกต้อง ต้องเป็น 'ชื่อไพ่,หมวดหมู่'"
+            server.sendto(error_msg.encode('utf-8'), addr)
+            
+    except Exception as e:
+        print(f"Server Error: {e}")
         try:
-            # รับข้อมูลจาก client
-            data, addr = sock.recvfrom(BUFFER_SIZE)
-            
-            # จัดการคำขอใน thread แยก เพื่อไม่ให้ blocking
-            thread = threading.Thread(target=handle_request, args=(data, addr))
-            thread.daemon = True
-            thread.start()
-            
-        except socket.timeout:
-            # timeout เพื่อให้สามารถตรวจสอบ running flag ได้
-            continue
-            
-except KeyboardInterrupt:
-    print("\n👋 กำลังปิดเซิร์ฟเวอร์...")
-    
-finally:
-    sock.close()
-    print("✅ เซิร์ฟเวอร์ปิดการทำงานเรียบร้อย")
+            server.sendto(f"Server error: {str(e)}".encode('utf-8'), addr)
+        except:
+            pass
