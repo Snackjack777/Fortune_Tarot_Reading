@@ -16,46 +16,48 @@ firebase_admin.initialize_app(cred, {
 
 def get_prediction(card_name, category):
     try:
-        # แก้ไข: ตรวจสอบโครงสร้างข้อมูลใน Firebase ก่อน
-        ref = db.reference("tarot")
+        ref = db.reference("/")
         all_data = ref.get()
-        
+
         if not all_data:
             return "ไม่พบข้อมูลในฐานข้อมูล"
+
+        # ปรับรูปแบบการค้นหาให้รองรับทั้งชื่อแบบมีช่องว่างและไม่มีช่องว่าง
+        # และชื่อแบบต่างๆ ที่อาจมีใน Firebase
         
-        print(f"Data structure: {type(all_data)}")  # debug
-        
-        # กรณีที่ 1: โครงสร้างเป็น /tarot/{card_name}/{category}
-        if isinstance(all_data, dict) and card_name in all_data:
+        # กรณีที่ 1: ค้นหาชื่อตรงๆ
+        if card_name in all_data:
             card_data = all_data[card_name]
-            if isinstance(card_data, dict) and category in card_data:
+            if category in card_data:
                 return card_data[category]
         
-        # กรณีที่ 2: โครงสร้างเป็น /tarot/{category}/{card_name}
-        if isinstance(all_data, dict) and category in all_data:
-            category_data = all_data[category]
-            if isinstance(category_data, dict) and card_name in category_data:
-                return category_data[card_name]
+        # กรณีที่ 2: ลองแทนที่ underscore ด้วยช่องว่าง
+        card_name_with_space = card_name.replace("_", " ")
+        if card_name_with_space in all_data:
+            card_data = all_data[card_name_with_space]
+            if category in card_data:
+                return card_data[category]
         
-        # กรณีที่ 3: โครงสร้างเป็น list ของไพ่
-        if isinstance(all_data, list):
-            for card in all_data:
-                if isinstance(card, dict):
-                    if card.get('name') == card_name:
-                        return card.get(category, "ไม่พบคำทำนาย")
+        # กรณีที่ 3: ลองแทนที่ช่องว่างด้วย underscore
+        card_name_with_underscore = card_name.replace(" ", "_")
+        if card_name_with_underscore in all_data:
+            card_data = all_data[card_name_with_underscore]
+            if category in card_data:
+                return card_data[category]
         
-        # กรณีที่ 4: ลองค้นหาแบบ case-insensitive
-        card_name_lower = card_name.lower()
+        # กรณีที่ 4: ค้นหาแบบ case-insensitive
         for key in all_data.keys():
-            if key.lower() == card_name_lower:
+            if key.lower() == card_name.lower() or key.lower() == card_name_with_space.lower() or key.lower() == card_name_with_underscore.lower():
                 card_data = all_data[key]
-                if isinstance(card_data, dict) and category in card_data:
+                if category in card_data:
                     return card_data[category]
+                break
         
-        return f"ไม่พบคำทำนายสำหรับไพ่ '{card_name}' ในหมวดหมู่ '{category}'"
-        
+        # ถ้าไม่พบข้อมูล
+        return f"ไม่พบคำทำนายสำหรับ {card_name} หมวด {category}"
+
     except Exception as e:
-        return f"เกิดข้อผิดพลาดในการดึงข้อมูล: {str(e)}"
+        return f"เกิดข้อผิดพลาด: {str(e)}"
 
 # --- 2. การตั้งค่า UDP Server ---
 HOST = "0.0.0.0"
@@ -88,7 +90,7 @@ while True:
             # ส่งข้อมูลกลับ (แปลงเป็น JSON string เพื่อรองรับภาษาไทย)
             response = json.dumps(prediction_result, ensure_ascii=False)
             server.sendto(response.encode('utf-8'), addr)
-            print(f"Sent response to {addr}")
+            print(f"Sent response to {addr}: {prediction_result}")
         else:
             error_msg = "รูปแบบข้อมูลไม่ถูกต้อง ต้องเป็น 'ชื่อไพ่,หมวดหมู่'"
             server.sendto(error_msg.encode('utf-8'), addr)
